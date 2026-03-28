@@ -405,6 +405,73 @@ let state = loadState();
 function saveState() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 function setState(fn) { fn(state); saveState(); render(); }
 
+// ── Editor lokal buffer ──
+// Inputfelter opdaterer kun bufferen ved tastetryk (ingen re-render).
+// Først ved blur (forlader feltet) skrives til state og dashboard opdateres.
+let editorBuffer = {};
+
+function syncBufferFromState(id) {
+  const p = state.pakker.find(x => x.id === id);
+  if (p) editorBuffer = JSON.parse(JSON.stringify(p));
+}
+
+// Opdater buffer lokalt – ingen re-render
+function bufferFelt(felt, vaerdi) {
+  editorBuffer[felt] = vaerdi;
+}
+
+// Gem buffer til state og re-render dashboard (men IKKE editor)
+function flushBuffer() {
+  if (!editorId) return;
+  setState(s => {
+    const p = s.pakker.find(x => x.id === editorId);
+    if (p) Object.assign(p, editorBuffer);
+  });
+  // setState kalder render() som re-renderer hele appen inkl. editor –
+  // vi genindlæser editor-scrollposition
+  const sheet = document.querySelector('.sheet');
+  const scroll = sheet ? sheet.scrollTop : 0;
+  // render() er allerede kaldt af setState; gendan scroll
+  requestAnimationFrame(() => {
+    const s2 = document.querySelector('.sheet');
+    if (s2) s2.scrollTop = scroll;
+  });
+}
+
+// Gem buffer til state uden re-render af editor (bruges ved blur)
+function flushBufferSilent() {
+  if (!editorId) return;
+  const p = state.pakker.find(x => x.id === editorId);
+  if (p) Object.assign(p, editorBuffer);
+  saveState();
+  // Opdater kun dashboard-delen, ikke editoren
+  renderDashboardOnly();
+}
+
+function renderDashboardOnly() {
+  const beregnede = state.pakker.map(beregn);
+  const vaerdier = beregnede.map(b => b.samletMd);
+  const maxVaerdi = Math.max(...vaerdier, 1);
+  const bedsteIdx = vaerdier.indexOf(Math.max(...vaerdier));
+  const bedste = beregnede.length > 0 ? beregnede[bedsteIdx] : null;
+  const maxNetto = Math.max(...beregnede.map(b => b.nettoMd), 1);
+  // Opdater kun main-sektionen, ikke overlay/editor
+  const mainEl = document.querySelector('main.main');
+  if (mainEl) {
+    const harSammenligning = beregnede.length >= 2;
+    mainEl.innerHTML = `
+      ${harSammenligning && bedste ? buildBanner(bedste) : ''}
+      ${beregnede.length === 0 ? buildEmpty() : buildPakker(beregnede, maxVaerdi, bedste)}
+      ${harSammenligning ? buildNettoSammenligning(beregnede, maxNetto) : ''}
+      ${harSammenligning ? `<div id="graf-container">${buildGrafKort()}</div>` : ''}
+      ${harSammenligning && bedste ? buildDifferenceAnalyse(beregnede, bedste) : ''}
+      ${harSammenligning ? buildAarsTabel(beregnede) : ''}
+      <footer>Beregningerne er vejledende estimater. AM-bidrag er 8 %. Indkomstskat beregnes ud fra den trækprocent du angiver pr. pakke. Kontakt en rådgiver for præcise beregninger.</footer>
+    `;
+    if (harSammenligning) renderGraf(beregnede);
+  }
+}
+
 // ════════════════════════════════════════════════════════════
 // RENDER
 // ════════════════════════════════════════════════════════════
@@ -818,40 +885,33 @@ function buildEditor(id) {
         <div class="field-section">Pakkenavn</div>
         <div class="field">
           <label>Navn</label>
-          <div class="input-wrap input-full"><input type="text" value="${esc(p.navn)}" oninput="opdaterFelt('${id}','navn',this.value)" placeholder="fx Pakke A, Virksomhed X..." /></div>
+          <div class="input-wrap input-full"><input type="text" value="${esc(p.navn)}" oninput="bufferFelt('navn',this.value)" onblur="flushBufferSilent()" placeholder="fx Pakke A, Virksomhed X..." /></div>
         </div>
 
         <div class="divider"></div>
         <div class="field-section">Løn</div>
         <div class="field">
           <label>Månedsløn før skat</label>
-          <div class="input-wrap"><input type="number" min="0" step="500" value="${p.maanedsloen||''}" oninput="opdaterFelt('${id}','maanedsloen',+this.value)" placeholder="0" /><span class="input-suffix">kr.</span></div>
-        </div>
+          <div class="input-wrap"><input type="number" min="0" step="500" value="${p.maanedsloen||\'\'}" oninput="bufferFelt('maanedsloen',+this.value)" onblur="flushBufferSilent()" placeholder="0" /><span class="input-suffix">kr.</span></div>       </div>
 
         <div class="divider"></div>
         <div class="field-section">Pension</div>
         <div class="field-row">
           <div class="field">
-            <label>Arbejdsgiver (%)</label>
-            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.pensionAG||''}" oninput="opdaterFelt('${id}','pensionAG',+this.value)" placeholder="0" /><span class="input-suffix">%</span></div>
-          </div>
+            <label>Arbejdsgiver (%)</label>            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.pensionAG||\'\'}" oninput="bufferFelt('pensionAG',+this.value)" onblur="flushBufferSilent()" placeholder="0" /><span class="input-suffix">%</span></div>          </div>
           <div class="field">
             <label>Medarbejder (%)</label>
-            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.pensionME||''}" oninput="opdaterFelt('${id}','pensionME',+this.value)" placeholder="0" /><span class="input-suffix">%</span></div>
-          </div>
+            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.pensionME||\'\'}" oninput="bufferFelt('pensionME',+this.value)" onblur="flushBufferSilent()" placeholder="0" /><span class="input-suffix">%</span></div>         </div>
         </div>
 
         <div class="divider"></div>
         <div class="field-section">Tillæg</div>
         <div class="field-row">
           <div class="field">
-            <label>Fritvalg (%)</label>
-            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.fritvalgPct||''}" oninput="opdaterFelt('${id}','fritvalgPct',+this.value)" placeholder="0" /><span class="input-suffix">%</span></div>
-          </div>
+            <label>Fritvalg (%)</label>            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.fritvalgPct||\'\'}" oninput="bufferFelt('fritvalgPct',+this.value)" onblur="flushBufferSilent()" placeholder="0" /><span class="input-suffix">%</span></div>          </div>
           <div class="field">
             <label>Ferietillæg (%)</label>
-            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.ferietillaegPct||''}" oninput="opdaterFelt('${id}','ferietillaegPct',+this.value)" placeholder="0" /><span class="input-suffix">%</span></div>
-          </div>
+            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.ferietillaegPct||\'\'}" oninput="bufferFelt('ferietillaegPct',+this.value)" onblur="flushBufferSilent()" placeholder="0" /><span class="input-suffix">%</span></div>         </div>
         </div>
 
         <div class="divider"></div>
@@ -867,26 +927,22 @@ function buildEditor(id) {
         <div class="field-row">
           <div class="field">
             <label>Arbejdstid (t/dag)</label>
-            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.arbejdstimer||''}" oninput="opdaterFelt('${id}','arbejdstimer',+this.value)" placeholder="7.4" /><span class="input-suffix">t</span></div>
-          </div>
+           <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.arbejdstimer||\'\'}" oninput="bufferFelt('arbejdstimer',+this.value)" onblur="flushBufferSilent()" placeholder="7.4" /><span class="input-suffix">t</span></div>          </div>
           <div class="field">
             <label>Arbejdsdage/md.</label>
-            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.arbejdsdage||''}" oninput="opdaterFelt('${id}','arbejdsdage',+this.value)" placeholder="21.67" /><span class="input-suffix">dage</span></div>
-          </div>
+            <div class="input-wrap"><input type="number" min="0" step="0.5" value="${p.arbejdsdage||\'\'}" oninput="bufferFelt('arbejdsdage',+this.value)" onblur="flushBufferSilent()" placeholder="21.67" /><span class="input-suffix">dage</span></div>         </div>
         </div>` : ''}
 
         <div class="divider"></div>
         <div class="field-section">Bonus</div>
         <div class="field">
-          <label>Bonus pr. år</label>
-          <div class="input-wrap"><input type="number" min="0" step="1000" value="${p.bonusAar||''}" oninput="opdaterFelt('${id}','bonusAar',+this.value)" placeholder="0" /><span class="input-suffix">kr.</span></div>
-        </div>
+          <label>Bonus pr. år</label>          <div class="input-wrap"><input type="number" min="0" step="1000" value="${p.bonusAar||\'\'}" oninput="bufferFelt('bonusAar',+this.value)" onblur="flushBufferSilent()" placeholder="0" /><span class="input-suffix">kr.</span></div>        </div>
 
         <div class="divider"></div>
         <div class="field-section">Feriefridage</div>
         <div class="field">
           <label>Ekstra feriefridage (ud over 25)</label>
-          <div class="input-wrap"><input type="number" min="0" step="1" value="${p.ekstraFerie||''}" oninput="opdaterFelt('${id}','ekstraFerie',+this.value)" placeholder="0" /><span class="input-suffix">dage</span></div>
+          <div class="input-wrap"><input type="number" min="0" step="1" value="${p.ekstraFerie||\'\'}" oninput="bufferFelt('ekstraFerie',+this.value)" onblur="flushBufferSilent()" placeholder="0" /><span class="input-suffix">dage</span></div>
         </div>
 
         <div class="divider"></div>
@@ -898,11 +954,11 @@ function buildEditor(id) {
         <div class="field-row">
           <div class="field">
             <label>Trækprocent</label>
-            <div class="input-wrap"><input type="number" min="0" max="60" step="0.5" value="${p.traekprocent||37}" oninput="opdaterFelt('${id}','traekprocent',+this.value)" placeholder="37" /><span class="input-suffix">%</span></div>
+            <div class="input-wrap"><input type="number" min="0" max="60" step="0.5" value="${p.traekprocent||37}" oninput="bufferFelt('traekprocent',+this.value)" onblur="flushBufferSilent()" placeholder="37" /><span class="input-suffix">%</span></div>
           </div>
           <div class="field">
             <label>Personfradrag/md.</label>
-            <div class="input-wrap"><input type="number" min="0" step="100" value="${p.personfradragMd||4108}" oninput="opdaterFelt('${id}','personfradragMd',+this.value)" placeholder="4108" /><span class="input-suffix">kr.</span></div>
+            <div class="input-wrap"><input type="number" min="0" step="100" value="${p.personfradragMd||4108}" oninput="bufferFelt('personfradragMd',+this.value)" onblur="flushBufferSilent()" placeholder="4108" /><span class="input-suffix">kr.</span></div>
           </div>
         </div>
         <div class="switch-row">
@@ -917,10 +973,8 @@ function buildEditor(id) {
         <div class="field-section">Personalegoder</div>
         <div id="goder-list">
           ${p.personalegoder.map(g => `
-          <div class="gode-row" id="gode-${g.id}">
-            <div class="input-wrap"><input type="text" value="${esc(g.navn)}" oninput="opdaterGode('${id}','${g.id}','navn',this.value)" placeholder="Navn på gode (fx sundhedsforsikring)" /></div>
-            <div class="input-wrap small"><input type="number" min="0" value="${g.vaerdi||''}" oninput="opdaterGode('${id}','${g.id}','vaerdi',+this.value)" placeholder="0" /><span class="input-suffix">kr/md</span></div>
-            <button class="btn btn-ghost btn-danger" onclick="sletGode('${id}','${g.id}')">
+          <div class="gode-row" id="gode-${g.id}">            <div class="input-wrap"><input type="text" value="${esc(g.navn)}" oninput="bufferGode('${g.id}','navn',this.value)" onblur="flushGode()" placeholder="Navn på gode (fx sundhedsforsikring)" /></div>
+            <div class="input-wrap small"><input type="number" min="0" value="${g.vaerdi||\'\'}" oninput="bufferGode('${g.id}','vaerdi',+this.value)" onblur="flushGode()" placeholder="0" /><span class="input-suffix">kr/md</span></div>            <button class="btn btn-ghost btn-danger" onclick="sletGode('${id}','${g.id}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
             </button>
           </div>`).join('')}
@@ -1018,29 +1072,50 @@ function duplikerPakke(id) {
       personalegoder: orig.personalegoder.map(g => ({ ...g, id:nanoid() })) });
   });
 }
-function aabneEditor(id) { editorId = id; render(); }
+function aabneEditor(id) { editorId = id; syncBufferFromState(id); render(); }
 function lukEditor(e) {
   if (e && e.target !== e.currentTarget) return;
-  editorId = null; render();
+  // Gem evt. uflushed buffer inden lukning
+  if (editorId) {
+    const p = state.pakker.find(x => x.id === editorId);
+    if (p) Object.assign(p, editorBuffer);
+    saveState();
+  }
+  editorId = null;
+  editorBuffer = {};
+  render();
 }
+// Bruges kun til switches og knapper (ingen fokus-problem)
 function opdaterFelt(id, felt, vaerdi) {
-  setState(s => { const p = s.pakker.find(x => x.id === id); if (p) p[felt] = vaerdi; });
+  editorBuffer[felt] = vaerdi;
+  setState(s => { const p = s.pakker.find(x => x.id === id); if (p) Object.assign(p, editorBuffer); });
   editorId = id;
+  syncBufferFromState(id);
 }
 function tilfoejGode(pakkeId) {
+  // Gem buffer inden tilføjelse
+  const p0 = state.pakker.find(x => x.id === pakkeId);
+  if (p0) Object.assign(p0, editorBuffer);
   setState(s => { const p = s.pakker.find(x => x.id === pakkeId); if (p) p.personalegoder.push({ id:nanoid(), navn:'', vaerdi:0 }); });
   editorId = pakkeId;
+  syncBufferFromState(pakkeId);
 }
-function opdaterGode(pakkeId, godeId, felt, vaerdi) {
-  setState(s => {
-    const p = s.pakker.find(x => x.id === pakkeId); if (!p) return;
-    const g = p.personalegoder.find(x => x.id === godeId); if (g) g[felt] = vaerdi;
-  });
-  editorId = pakkeId;
+function bufferGode(godeId, felt, vaerdi) {
+  // Opdater gode i buffer lokalt – ingen re-render
+  if (!editorBuffer.personalegoder) return;
+  const g = editorBuffer.personalegoder.find(x => x.id === godeId);
+  if (g) g[felt] = vaerdi;
+}
+function flushGode() {
+  flushBufferSilent();
 }
 function sletGode(pakkeId, godeId) {
+  // Gem buffer inden sletning
+  const p0 = state.pakker.find(x => x.id === pakkeId);
+  if (p0) Object.assign(p0, editorBuffer);
   setState(s => { const p = s.pakker.find(x => x.id === pakkeId); if (p) p.personalegoder = p.personalegoder.filter(g => g.id !== godeId); });
   editorId = pakkeId;
+  syncBufferFromState(pakkeId);
 }
 function toggleDetails(id) { openDetails[id] = !openDetails[id]; render(); }
 function setVisning(v) { setState(s => { s.visning = v; }); }
